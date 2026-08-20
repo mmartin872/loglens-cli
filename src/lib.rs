@@ -1,0 +1,206 @@
+//! Core types and parsing for loglens.
+//!
+//! A log line is expected to start with a timestamp token followed by a
+//! level token, e.g. `2026-08-21T10:15:03Z INFO server started`. Anything
+//! that doesn't match that shape is still counted toward the total, just
+//! not attributed to a level.
+
+use std::fmt;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Level {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+impl Level {
+    fn from_token(token: &str) -> Option<Level> {
+        match token {
+            "TRACE" | "trace" => Some(Level::Trace),
+            "DEBUG" | "debug" => Some(Level::Debug),
+            "INFO" | "info" => Some(Level::Info),
+            "WARN" | "WARNING" | "warn" | "warning" => Some(Level::Warn),
+            "ERROR" | "error" => Some(Level::Error),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Level::Trace => "TRACE",
+            Level::Debug => "DEBUG",
+            Level::Info => "INFO",
+            Level::Warn => "WARN",
+            Level::Error => "ERROR",
+        }
+    }
+}
+
+impl fmt::Display for Level {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// A single parsed line.
+#[derive(Debug, Clone)]
+pub struct Entry {
+    pub timestamp: String,
+    pub level: Level,
+    pub message: String,
+}
+
+/// Try to read a timestamp + level + message out of a raw line.
+///
+/// The parser is deliberately loose: it splits on the first two runs of
+/// whitespace and only requires the second token to be a recognized level
+/// name. Real log files vary too much in column layout to assume more
+/// structure than that.
+pub fn parse_line(line: &str) -> Option<Entry> {
+    let mut parts = line.splitn(3, char::is_whitespace);
+    let timestamp = parts.next()?;
+    let level_token = parts.next()?;
+    let message = parts.next().unwrap_or("");
+
+    let level = Level::from_token(level_token)?;
+
+    Some(Entry {
+        timestamp: timestamp.to_string(),
+        level,
+        message: message.to_string(),
+    })
+}
+
+/// Aggregate counts across a set of lines.
+#[derive(Debug, Default)]
+pub struct Summary {
+    pub total_lines: usize,
+    pub unparsed_lines: usize,
+    pub trace: usize,
+    pub debug: usize,
+    pub info: usize,
+    pub warn: usize,
+    pub error: usize,
+    pub first_timestamp: Option<String>,
+    pub last_timestamp: Option<String>,
+}
+
+impl Summary {
+    pub fn count_for(&self, level: Level) -> usize {
+        match level {
+            Level::Trace => self.trace,
+            Level::Debug => self.debug,
+            Level::Info => self.info,
+            Level::Warn => self.warn,
+            Level::Error => self.error,
+        }
+    }
+
+    fn record(&mut self, entry: &Entry) {
+        match entry.level {
+            Level::Trace => self.trace += 1,
+            Level::Debug => self.debug += 1,
+            Level::Info => self.info += 1,
+            Level::Warn => self.warn += 1,
+            Level::Error => self.error += 1,
+        }
+        if self.first_timestamp.is_none() {
+            self.first_timestamp = Some(entry.timestamp.clone());
+        }
+        self.last_timestamp = Some(entry.timestamp.clone());
+    }
+
+    /// Render as a single-line JSON object. Hand-rolled because pulling in
+    /// serde for eight fields isn't worth taking on a dependency.
+    pub fn to_json(&self) -> String {
+        format!(
+            "{{\"total_lines\":{},\"unparsed_lines\":{},\"trace\":{},\"debug\":{},\"info\":{},\"warn\":{},\"error\":{},\"first_timestamp\":{},\"last_timestamp\":{}}}",
+            self.total_lines,
+            self.unparsed_lines,
+            self.trace,
+            self.debug,
+            self.info,
+            self.warn,
+            self.error,
+            json_opt_string(&self.first_timestamp),
+            json_opt_string(&self.last_timestamp),
+        )
+    }
+}
+
+fn json_opt_string(value: &Option<String>) -> String {
+    match value {
+        Some(s) => json_string(s),
+        None => "null".to_string(),
+    }
+}
+
+/// Escape a string for embedding in JSON output. Covers the characters
+/// that actually turn up in timestamps and log messages, not the full
+/// unicode escape table.
+fn json_string(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for c in value.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Summarize a full log file's contents, one line at a time.
+pub fn summarize<'a, I: Iterator<Item = &'a str>>(lines: I) -> Summary {
+    let mut summary = Summary::default();
+    for line in lines {
+        if line.trim().is_empty() {
+            continue;
+        }
+        summary.total_lines += 1;
+        match parse_line(line) {
+            Some(entry) => summary.record(&entry),
+            None => summary.unparsed_lines += 1,
+        }
+    }
+    summary
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_a_well_formed_line() {
+        let entry = parse_line("2026-08-21T10:15:03Z ERROR disk full").unwrap();
+        assert_eq!(entry.timestamp, "2026-08-21T10:15:03Z");
+        assert_eq!(entry.level, Level::Error);
+        assert_eq!(entry.message, "disk full");
+    }
+
+    #[test]
+    fn rejects_a_line_without_a_recognized_level() {
+        assert!(parse_line("2026-08-21T10:15:03Z something happened").is_none());
+    }
+
+    #[test]
+    fn summary_counts_by_level_and_tracks_span() {
+        let text = "2026-08-21T10:00:00Z INFO up\n2026-08-21T10:00:01Z ERROR down\nnot a log line\n";
+        let summary = summarize(text.lines());
+        assert_eq!(summary.total_lines, 3);
+        assert_eq!(summary.info, 1);
+        assert_eq!(summary.error, 1);
+        assert_eq!(summary.unparsed_lines, 1);
+        assert_eq!(summary.first_timestamp.as_deref(), Some("2026-08-21T10:00:00Z"));
+        assert_eq!(summary.last_timestamp.as_deref(), Some("2026-08-21T10:00:01Z"));
+    }
+}

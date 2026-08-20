@@ -1,0 +1,11 @@
+[package]
+name = "loglens"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[[bin]]
+name = "loglens"
+path = "src/main.rs"
+
+[dependencies]
