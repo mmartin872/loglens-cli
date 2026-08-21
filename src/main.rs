@@ -2,21 +2,33 @@ use std::env;
 use std::fs;
 use std::process::ExitCode;
 
-use loglens::{summarize, Summary};
+use loglens::{summarize_with_min_level, Level, Summary};
 
 struct Args {
     path: String,
     json: bool,
+    min_level: Option<Level>,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut path = None;
     let mut json = false;
+    let mut min_level = None;
 
-    for arg in env::args().skip(1) {
+    let mut args = env::args().skip(1);
+    while let Some(arg) = args.next() {
         match arg.as_str() {
             "--json" => json = true,
             "-h" | "--help" => return Err(usage()),
+            "--min-level" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| format!("--min-level needs a value\n\n{}", usage()))?;
+                min_level = Some(
+                    Level::parse(&value)
+                        .ok_or_else(|| format!("unrecognized level: {value}\n\n{}", usage()))?,
+                );
+            }
             other if other.starts_with('-') => {
                 return Err(format!("unrecognized flag: {other}\n\n{}", usage()))
             }
@@ -25,11 +37,15 @@ fn parse_args() -> Result<Args, String> {
     }
 
     let path = path.ok_or_else(|| format!("missing log file path\n\n{}", usage()))?;
-    Ok(Args { path, json })
+    Ok(Args {
+        path,
+        json,
+        min_level,
+    })
 }
 
 fn usage() -> String {
-    "usage: loglens <file> [--json]".to_string()
+    "usage: loglens <file> [--json] [--min-level LEVEL]".to_string()
 }
 
 fn main() -> ExitCode {
@@ -49,19 +65,22 @@ fn main() -> ExitCode {
         }
     };
 
-    let summary = summarize(contents.lines());
+    let summary = summarize_with_min_level(contents.lines(), args.min_level);
 
     if args.json {
         println!("{}", summary.to_json());
     } else {
-        print_human(&args.path, &summary);
+        print_human(&args.path, &summary, args.min_level);
     }
 
     ExitCode::SUCCESS
 }
 
-fn print_human(path: &str, summary: &Summary) {
+fn print_human(path: &str, summary: &Summary, min_level: Option<Level>) {
     println!("{path}");
+    if let Some(min_level) = min_level {
+        println!("  min level:      {min_level}");
+    }
     println!("  total lines:    {}", summary.total_lines);
     println!("  unparsed lines: {}", summary.unparsed_lines);
     println!("  trace: {}", summary.trace);

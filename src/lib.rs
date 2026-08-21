@@ -28,6 +28,12 @@ impl Level {
         }
     }
 
+    /// Parse a level name from a CLI argument. Accepts the same spellings
+    /// as line parsing (including "warning" as an alias for "warn").
+    pub fn parse(name: &str) -> Option<Level> {
+        Level::from_token(name)
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Level::Trace => "TRACE",
@@ -161,6 +167,17 @@ fn json_string(value: &str) -> String {
 
 /// Summarize a full log file's contents, one line at a time.
 pub fn summarize<'a, I: Iterator<Item = &'a str>>(lines: I) -> Summary {
+    summarize_with_min_level(lines, None)
+}
+
+/// Summarize a full log file's contents, dropping any parsed entry below
+/// `min_level` from the per-level counts and the first/last timestamp span.
+/// Lines that don't parse at all still count toward `unparsed_lines`
+/// regardless of the filter - the filter only applies to recognized levels.
+pub fn summarize_with_min_level<'a, I: Iterator<Item = &'a str>>(
+    lines: I,
+    min_level: Option<Level>,
+) -> Summary {
     let mut summary = Summary::default();
     for line in lines {
         if line.trim().is_empty() {
@@ -168,7 +185,11 @@ pub fn summarize<'a, I: Iterator<Item = &'a str>>(lines: I) -> Summary {
         }
         summary.total_lines += 1;
         match parse_line(line) {
-            Some(entry) => summary.record(&entry),
+            Some(entry) => {
+                if min_level.map_or(true, |min| entry.level >= min) {
+                    summary.record(&entry);
+                }
+            }
             None => summary.unparsed_lines += 1,
         }
     }
@@ -202,5 +223,33 @@ mod tests {
         assert_eq!(summary.unparsed_lines, 1);
         assert_eq!(summary.first_timestamp.as_deref(), Some("2026-08-21T10:00:00Z"));
         assert_eq!(summary.last_timestamp.as_deref(), Some("2026-08-21T10:00:01Z"));
+    }
+
+    #[test]
+    fn parses_level_names_case_insensitively() {
+        assert_eq!(Level::parse("warn"), Some(Level::Warn));
+        assert_eq!(Level::parse("WARNING"), Some(Level::Warn));
+        assert_eq!(Level::parse("nonsense"), None);
+    }
+
+    #[test]
+    fn min_level_drops_lower_levels_from_counts_and_span() {
+        let text = "2026-08-21T10:00:00Z INFO up\n2026-08-21T10:00:01Z ERROR down\n2026-08-21T10:00:02Z INFO steady\n";
+        let summary = summarize_with_min_level(text.lines(), Some(Level::Error));
+        assert_eq!(summary.total_lines, 3);
+        assert_eq!(summary.unparsed_lines, 0);
+        assert_eq!(summary.info, 0);
+        assert_eq!(summary.error, 1);
+        assert_eq!(summary.first_timestamp.as_deref(), Some("2026-08-21T10:00:01Z"));
+        assert_eq!(summary.last_timestamp.as_deref(), Some("2026-08-21T10:00:01Z"));
+    }
+
+    #[test]
+    fn min_level_still_counts_unparsed_lines() {
+        let text = "not a log line\n2026-08-21T10:00:00Z INFO up\n";
+        let summary = summarize_with_min_level(text.lines(), Some(Level::Error));
+        assert_eq!(summary.total_lines, 2);
+        assert_eq!(summary.unparsed_lines, 1);
+        assert_eq!(summary.info, 0);
     }
 }
