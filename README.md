@@ -57,6 +57,29 @@ Lines that don't parse at all still land in `unparsed_lines` regardless
 of `--min-level` - the filter only drops recognized levels below the
 threshold.
 
+Add `--since` and/or `--until` to restrict the summary to a timestamp
+range, inclusive on both ends:
+
+```
+$ loglens server.log --since 2026-08-21T10:15:04Z
+server.log
+  since:          2026-08-21T10:15:04Z
+  total lines:    3
+  unparsed lines: 0
+  trace: 0
+  debug: 0
+  info:  0
+  warn:  1
+  error: 1
+  first: 2026-08-21T10:15:04Z
+  last:  2026-08-21T10:16:41Z
+```
+
+The bounds are compared against the raw timestamp text, so they only
+sort correctly for the `2026-08-21T10:15:03Z`-style timestamps this
+version recognizes. As with `--min-level`, unparsed lines still count
+toward `unparsed_lines` regardless of the range.
+
 Add `--json` when you want to pipe the result into something else
 instead of reading it:
 
@@ -88,6 +111,6 @@ cargo build --release
 
 ## Status
 
-Early. See the project's issue tracker for what's planned next - a
-time range filter on the timestamp, following a file as it grows, and
-support for a couple more timestamp shapes are the near-term targets.
+Early. See the project's issue tracker for what's planned next -
+recognizing a couple more timestamp shapes and following a file as it
+grows are the near-term targets.

@@ -2,18 +2,22 @@ use std::env;
 use std::fs;
 use std::process::ExitCode;
 
-use loglens::{summarize_with_min_level, Level, Summary};
+use loglens::{summarize_with_filters, Level, Summary};
 
 struct Args {
     path: String,
     json: bool,
     min_level: Option<Level>,
+    since: Option<String>,
+    until: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut path = None;
     let mut json = false;
     let mut min_level = None;
+    let mut since = None;
+    let mut until = None;
 
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -29,6 +33,18 @@ fn parse_args() -> Result<Args, String> {
                         .ok_or_else(|| format!("unrecognized level: {value}\n\n{}", usage()))?,
                 );
             }
+            "--since" => {
+                since = Some(
+                    args.next()
+                        .ok_or_else(|| format!("--since needs a timestamp\n\n{}", usage()))?,
+                );
+            }
+            "--until" => {
+                until = Some(
+                    args.next()
+                        .ok_or_else(|| format!("--until needs a timestamp\n\n{}", usage()))?,
+                );
+            }
             other if other.starts_with('-') => {
                 return Err(format!("unrecognized flag: {other}\n\n{}", usage()))
             }
@@ -41,11 +57,14 @@ fn parse_args() -> Result<Args, String> {
         path,
         json,
         min_level,
+        since,
+        until,
     })
 }
 
 fn usage() -> String {
-    "usage: loglens <file> [--json] [--min-level LEVEL]".to_string()
+    "usage: loglens <file> [--json] [--min-level LEVEL] [--since TIMESTAMP] [--until TIMESTAMP]"
+        .to_string()
 }
 
 fn main() -> ExitCode {
@@ -65,21 +84,44 @@ fn main() -> ExitCode {
         }
     };
 
-    let summary = summarize_with_min_level(contents.lines(), args.min_level);
+    let summary = summarize_with_filters(
+        contents.lines(),
+        args.min_level,
+        args.since.as_deref(),
+        args.until.as_deref(),
+    );
 
     if args.json {
         println!("{}", summary.to_json());
     } else {
-        print_human(&args.path, &summary, args.min_level);
+        print_human(
+            &args.path,
+            &summary,
+            args.min_level,
+            args.since.as_deref(),
+            args.until.as_deref(),
+        );
     }
 
     ExitCode::SUCCESS
 }
 
-fn print_human(path: &str, summary: &Summary, min_level: Option<Level>) {
+fn print_human(
+    path: &str,
+    summary: &Summary,
+    min_level: Option<Level>,
+    since: Option<&str>,
+    until: Option<&str>,
+) {
     println!("{path}");
     if let Some(min_level) = min_level {
         println!("  min level:      {min_level}");
+    }
+    if let Some(since) = since {
+        println!("  since:          {since}");
+    }
+    if let Some(until) = until {
+        println!("  until:          {until}");
     }
     println!("  total lines:    {}", summary.total_lines);
     println!("  unparsed lines: {}", summary.unparsed_lines);

@@ -167,7 +167,7 @@ fn json_string(value: &str) -> String {
 
 /// Summarize a full log file's contents, one line at a time.
 pub fn summarize<'a, I: Iterator<Item = &'a str>>(lines: I) -> Summary {
-    summarize_with_min_level(lines, None)
+    summarize_with_filters(lines, None, None, None)
 }
 
 /// Summarize a full log file's contents, dropping any parsed entry below
@@ -178,6 +178,28 @@ pub fn summarize_with_min_level<'a, I: Iterator<Item = &'a str>>(
     lines: I,
     min_level: Option<Level>,
 ) -> Summary {
+    summarize_with_filters(lines, min_level, None, None)
+}
+
+/// Summarize a full log file's contents, dropping any parsed entry that
+/// falls below `min_level`, or outside the `[since, until]` timestamp
+/// range, from the per-level counts and the first/last timestamp span.
+///
+/// `since` and `until` are compared against the raw timestamp token as a
+/// string, inclusive on both ends. That only gives correct ordering for
+/// timestamps that sort the same lexicographically as chronologically
+/// (like the `2026-08-21T10:15:03Z` shape this parser currently expects) -
+/// once more timestamp formats are recognized this will need to parse into
+/// a common comparable form instead.
+///
+/// Lines that don't parse at all still count toward `unparsed_lines`
+/// regardless of any filter - filters only apply to recognized levels.
+pub fn summarize_with_filters<'a, I: Iterator<Item = &'a str>>(
+    lines: I,
+    min_level: Option<Level>,
+    since: Option<&str>,
+    until: Option<&str>,
+) -> Summary {
     let mut summary = Summary::default();
     for line in lines {
         if line.trim().is_empty() {
@@ -186,7 +208,10 @@ pub fn summarize_with_min_level<'a, I: Iterator<Item = &'a str>>(
         summary.total_lines += 1;
         match parse_line(line) {
             Some(entry) => {
-                if min_level.map_or(true, |min| entry.level >= min) {
+                let level_ok = min_level.map_or(true, |min| entry.level >= min);
+                let since_ok = since.map_or(true, |s| entry.timestamp.as_str() >= s);
+                let until_ok = until.map_or(true, |u| entry.timestamp.as_str() <= u);
+                if level_ok && since_ok && until_ok {
                     summary.record(&entry);
                 }
             }
@@ -251,5 +276,54 @@ mod tests {
         assert_eq!(summary.total_lines, 2);
         assert_eq!(summary.unparsed_lines, 1);
         assert_eq!(summary.info, 0);
+    }
+
+    #[test]
+    fn time_range_drops_entries_outside_the_window() {
+        let text = "2026-08-21T09:00:00Z INFO early\n2026-08-21T10:00:00Z INFO in range\n2026-08-21T11:00:00Z INFO late\n";
+        let summary = summarize_with_filters(
+            text.lines(),
+            None,
+            Some("2026-08-21T09:30:00Z"),
+            Some("2026-08-21T10:30:00Z"),
+        );
+        assert_eq!(summary.total_lines, 3);
+        assert_eq!(summary.info, 1);
+        assert_eq!(
+            summary.first_timestamp.as_deref(),
+            Some("2026-08-21T10:00:00Z")
+        );
+        assert_eq!(
+            summary.last_timestamp.as_deref(),
+            Some("2026-08-21T10:00:00Z")
+        );
+    }
+
+    #[test]
+    fn time_range_bounds_are_inclusive() {
+        let text = "2026-08-21T10:00:00Z INFO edge\n";
+        let summary = summarize_with_filters(
+            text.lines(),
+            None,
+            Some("2026-08-21T10:00:00Z"),
+            Some("2026-08-21T10:00:00Z"),
+        );
+        assert_eq!(summary.info, 1);
+    }
+
+    #[test]
+    fn time_range_combines_with_min_level() {
+        let text = "2026-08-21T10:00:00Z ERROR in range but filtered by level\n2026-08-21T12:00:00Z ERROR out of range\n";
+        let summary = summarize_with_filters(
+            text.lines(),
+            Some(Level::Warn),
+            Some("2026-08-21T09:00:00Z"),
+            Some("2026-08-21T11:00:00Z"),
+        );
+        assert_eq!(summary.error, 1);
+        assert_eq!(
+            summary.first_timestamp.as_deref(),
+            Some("2026-08-21T10:00:00Z")
+        );
     }
 }
