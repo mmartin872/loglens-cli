@@ -75,10 +75,15 @@ server.log
   last:  2026-08-21T10:16:41Z
 ```
 
-The bounds are compared against the raw timestamp text, so they only
-sort correctly for the `2026-08-21T10:15:03Z`-style timestamps this
-version recognizes. As with `--min-level`, unparsed lines still count
-toward `unparsed_lines` regardless of the range.
+The bounds are compared chronologically when both the log line and the
+bound are in a recognized shape: RFC 3339 with `Z` or a numeric offset
+(`2026-08-21T10:15:03Z`, `2026-08-21T10:15:03+02:00`, fractional seconds
+allowed), or bare Unix epoch seconds (`1787307303`). A `--since`/`--until`
+value doesn't have to match the log's own format - epoch seconds work
+fine as a bound against RFC 3339 log lines. Anything else falls back to
+comparing the raw text, which only sorts correctly if the format happens
+to sort the same as text. As with `--min-level`, unparsed lines still
+count toward `unparsed_lines` regardless of the range.
 
 Add `--json` when you want to pipe the result into something else
 instead of reading it:
@@ -112,5 +117,5 @@ cargo build --release
 ## Status
 
 Early. See the project's issue tracker for what's planned next -
-recognizing a couple more timestamp shapes and following a file as it
-grows are the near-term targets.
+following a file as it grows, and a per-level JSON array of matching
+lines for scripting, are the near-term targets.

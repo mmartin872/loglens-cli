@@ -7,6 +7,8 @@
 
 use std::fmt;
 
+mod timestamp;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Level {
     Trace,
@@ -185,12 +187,12 @@ pub fn summarize_with_min_level<'a, I: Iterator<Item = &'a str>>(
 /// falls below `min_level`, or outside the `[since, until]` timestamp
 /// range, from the per-level counts and the first/last timestamp span.
 ///
-/// `since` and `until` are compared against the raw timestamp token as a
-/// string, inclusive on both ends. That only gives correct ordering for
-/// timestamps that sort the same lexicographically as chronologically
-/// (like the `2026-08-21T10:15:03Z` shape this parser currently expects) -
-/// once more timestamp formats are recognized this will need to parse into
-/// a common comparable form instead.
+/// `since` and `until` are inclusive on both ends. Timestamps in a
+/// recognized shape (RFC 3339 with `Z` or a numeric offset, or bare Unix
+/// epoch seconds - see the `timestamp` module) are compared chronologically
+/// regardless of which of those shapes each side uses. Anything else falls
+/// back to a plain string comparison, which only orders correctly for
+/// formats that happen to sort the same as text.
 ///
 /// Lines that don't parse at all still count toward `unparsed_lines`
 /// regardless of any filter - filters only apply to recognized levels.
@@ -209,8 +211,12 @@ pub fn summarize_with_filters<'a, I: Iterator<Item = &'a str>>(
         match parse_line(line) {
             Some(entry) => {
                 let level_ok = min_level.map_or(true, |min| entry.level >= min);
-                let since_ok = since.map_or(true, |s| entry.timestamp.as_str() >= s);
-                let until_ok = until.map_or(true, |u| entry.timestamp.as_str() <= u);
+                let since_ok = since.map_or(true, |s| {
+                    timestamp::compare(&entry.timestamp, s) != std::cmp::Ordering::Less
+                });
+                let until_ok = until.map_or(true, |u| {
+                    timestamp::compare(&entry.timestamp, u) != std::cmp::Ordering::Greater
+                });
                 if level_ok && since_ok && until_ok {
                     summary.record(&entry);
                 }
@@ -309,6 +315,19 @@ mod tests {
             Some("2026-08-21T10:00:00Z"),
         );
         assert_eq!(summary.info, 1);
+    }
+
+    #[test]
+    fn time_range_bound_can_use_a_different_recognized_format_than_the_log() {
+        // Log lines are RFC 3339; the --since bound is given as Unix epoch
+        // seconds for the same instant as the second line.
+        let text = "2026-08-21T09:00:00Z INFO early\n2026-08-21T10:15:03Z INFO on the bound\n2026-08-21T11:00:00Z INFO late\n";
+        let summary = summarize_with_filters(text.lines(), None, Some("1787307303"), None);
+        assert_eq!(summary.info, 2);
+        assert_eq!(
+            summary.first_timestamp.as_deref(),
+            Some("2026-08-21T10:15:03Z")
+        );
     }
 
     #[test]
