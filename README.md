@@ -96,6 +96,26 @@ $ loglens server.log --json
 Both modes are backed by the same `Summary` struct, so the two outputs
 never drift apart in what they report.
 
+Add `--follow` (or `-f`) to watch a file the way `tail -f` does, instead
+of summarizing it once. Rather than printing a running summary,
+`loglens` prints each new matching entry as it lands - a summary that
+can never finish doesn't make sense for a file that keeps growing:
+
+```
+$ loglens server.log --follow
+2026-08-21T10:15:03Z INFO server started on port 8080
+2026-08-21T10:15:04Z WARN client disconnected early
+```
+
+`--min-level`, `--since`, and `--until` still apply, so `--follow
+--min-level warn` watches a file for warnings and errors only. `--json`
+switches each printed entry to a single-line JSON object instead of the
+plain-text form. Unparsed and blank lines are skipped rather than
+printed, same as they're excluded from the level counts in the
+one-shot summary. If the file shrinks - truncated or replaced by log
+rotation - `loglens` notices and starts reading from the top again.
+`--follow` runs until you stop it (Ctrl-C).
+
 ## As a library
 
 ```rust
@@ -116,6 +136,6 @@ cargo build --release
 
 ## Status
 
-Early. See the project's issue tracker for what's planned next -
-following a file as it grows, and a per-level JSON array of matching
-lines for scripting, are the near-term targets.
+Early. See the project's issue tracker for what's planned next - a
+per-level JSON array of matching lines for scripting is the near-term
+target.

@@ -61,6 +61,20 @@ pub struct Entry {
     pub message: String,
 }
 
+impl Entry {
+    /// Render as a single-line JSON object, one entry at a time - used by
+    /// `--follow --json`, where each new line is its own JSON value rather
+    /// than an aggregate.
+    pub fn to_json(&self) -> String {
+        format!(
+            "{{\"timestamp\":{},\"level\":\"{}\",\"message\":{}}}",
+            json_string(&self.timestamp),
+            self.level,
+            json_string(&self.message),
+        )
+    }
+}
+
 /// Try to read a timestamp + level + message out of a raw line.
 ///
 /// The parser is deliberately loose: it splits on the first two runs of
@@ -167,6 +181,25 @@ fn json_string(value: &str) -> String {
     out
 }
 
+/// Check whether a parsed entry should be kept under the given level and
+/// timestamp-range filters. Shared between the one-shot summary path and
+/// `--follow`, so the two never disagree about what counts as "in range".
+pub fn passes_filters(
+    entry: &Entry,
+    min_level: Option<Level>,
+    since: Option<&str>,
+    until: Option<&str>,
+) -> bool {
+    let level_ok = min_level.map_or(true, |min| entry.level >= min);
+    let since_ok = since.map_or(true, |s| {
+        timestamp::compare(&entry.timestamp, s) != std::cmp::Ordering::Less
+    });
+    let until_ok = until.map_or(true, |u| {
+        timestamp::compare(&entry.timestamp, u) != std::cmp::Ordering::Greater
+    });
+    level_ok && since_ok && until_ok
+}
+
 /// Summarize a full log file's contents, one line at a time.
 pub fn summarize<'a, I: Iterator<Item = &'a str>>(lines: I) -> Summary {
     summarize_with_filters(lines, None, None, None)
@@ -210,14 +243,7 @@ pub fn summarize_with_filters<'a, I: Iterator<Item = &'a str>>(
         summary.total_lines += 1;
         match parse_line(line) {
             Some(entry) => {
-                let level_ok = min_level.map_or(true, |min| entry.level >= min);
-                let since_ok = since.map_or(true, |s| {
-                    timestamp::compare(&entry.timestamp, s) != std::cmp::Ordering::Less
-                });
-                let until_ok = until.map_or(true, |u| {
-                    timestamp::compare(&entry.timestamp, u) != std::cmp::Ordering::Greater
-                });
-                if level_ok && since_ok && until_ok {
+                if passes_filters(&entry, min_level, since, until) {
                     summary.record(&entry);
                 }
             }
