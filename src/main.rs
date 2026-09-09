@@ -5,7 +5,10 @@ use std::process::ExitCode;
 use std::thread;
 use std::time::Duration;
 
-use loglens::{parse_line, passes_filters, summarize_with_filters, Level, Summary};
+use loglens::{
+    parse_line, passes_filters, summarize_with_filters, summarize_with_filters_and_lines, Level,
+    LevelLines, Summary,
+};
 
 struct Args {
     path: String,
@@ -14,6 +17,7 @@ struct Args {
     since: Option<String>,
     until: Option<String>,
     follow: bool,
+    lines: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -23,12 +27,14 @@ fn parse_args() -> Result<Args, String> {
     let mut since = None;
     let mut until = None;
     let mut follow = false;
+    let mut lines = false;
 
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--json" => json = true,
             "--follow" | "-f" => follow = true,
+            "--lines" => lines = true,
             "-h" | "--help" => return Err(usage()),
             "--min-level" => {
                 let value = args
@@ -66,11 +72,12 @@ fn parse_args() -> Result<Args, String> {
         since,
         until,
         follow,
+        lines,
     })
 }
 
 fn usage() -> String {
-    "usage: loglens <file> [--json] [--min-level LEVEL] [--since TIMESTAMP] [--until TIMESTAMP] [--follow]"
+    "usage: loglens <file> [--json] [--min-level LEVEL] [--since TIMESTAMP] [--until TIMESTAMP] [--follow] [--lines]"
         .to_string()
 }
 
@@ -101,15 +108,26 @@ fn main() -> ExitCode {
         }
     };
 
-    let summary = summarize_with_filters(
-        contents.lines(),
-        args.min_level,
-        args.since.as_deref(),
-        args.until.as_deref(),
-    );
+    let (summary, level_lines) = if args.lines {
+        let (summary, level_lines) = summarize_with_filters_and_lines(
+            contents.lines(),
+            args.min_level,
+            args.since.as_deref(),
+            args.until.as_deref(),
+        );
+        (summary, Some(level_lines))
+    } else {
+        let summary = summarize_with_filters(
+            contents.lines(),
+            args.min_level,
+            args.since.as_deref(),
+            args.until.as_deref(),
+        );
+        (summary, None)
+    };
 
     if args.json {
-        println!("{}", summary.to_json());
+        println!("{}", summary.to_json(level_lines.as_ref()));
     } else {
         print_human(
             &args.path,
@@ -117,6 +135,7 @@ fn main() -> ExitCode {
             args.min_level,
             args.since.as_deref(),
             args.until.as_deref(),
+            level_lines.as_ref(),
         );
     }
 
@@ -129,6 +148,7 @@ fn print_human(
     min_level: Option<Level>,
     since: Option<&str>,
     until: Option<&str>,
+    level_lines: Option<&LevelLines>,
 ) {
     println!("{path}");
     if let Some(min_level) = min_level {
@@ -152,6 +172,25 @@ fn print_human(
     }
     if let Some(last) = &summary.last_timestamp {
         println!("  last:  {last}");
+    }
+    if let Some(level_lines) = level_lines {
+        println!("  matching lines:");
+        for level in [
+            Level::Trace,
+            Level::Debug,
+            Level::Info,
+            Level::Warn,
+            Level::Error,
+        ] {
+            let entries = level_lines.for_level(level);
+            if entries.is_empty() {
+                continue;
+            }
+            println!("    {level}:");
+            for entry in entries {
+                println!("      {} {}", entry.timestamp, entry.message);
+            }
+        }
     }
 }
 

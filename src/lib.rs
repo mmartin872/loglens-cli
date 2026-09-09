@@ -137,9 +137,12 @@ impl Summary {
 
     /// Render as a single-line JSON object. Hand-rolled because pulling in
     /// serde for eight fields isn't worth taking on a dependency.
-    pub fn to_json(&self) -> String {
-        format!(
-            "{{\"total_lines\":{},\"unparsed_lines\":{},\"trace\":{},\"debug\":{},\"info\":{},\"warn\":{},\"error\":{},\"first_timestamp\":{},\"last_timestamp\":{}}}",
+    ///
+    /// `lines`, when given, is nested under a `"lines"` key holding the
+    /// matching entries grouped by level - see `LevelLines`.
+    pub fn to_json(&self, lines: Option<&LevelLines>) -> String {
+        let mut out = format!(
+            "{{\"total_lines\":{},\"unparsed_lines\":{},\"trace\":{},\"debug\":{},\"info\":{},\"warn\":{},\"error\":{},\"first_timestamp\":{},\"last_timestamp\":{}",
             self.total_lines,
             self.unparsed_lines,
             self.trace,
@@ -149,8 +152,64 @@ impl Summary {
             self.error,
             json_opt_string(&self.first_timestamp),
             json_opt_string(&self.last_timestamp),
+        );
+        if let Some(lines) = lines {
+            out.push_str(",\"lines\":");
+            out.push_str(&lines.to_json());
+        }
+        out.push('}');
+        out
+    }
+}
+
+/// Matching entries grouped by level, for callers that want the actual
+/// lines rather than just counts - e.g. piping `--json --lines` output
+/// through `jq '.lines.error'` to pull out every error line.
+#[derive(Debug, Default)]
+pub struct LevelLines {
+    pub trace: Vec<Entry>,
+    pub debug: Vec<Entry>,
+    pub info: Vec<Entry>,
+    pub warn: Vec<Entry>,
+    pub error: Vec<Entry>,
+}
+
+impl LevelLines {
+    fn record(&mut self, entry: &Entry) {
+        match entry.level {
+            Level::Trace => self.trace.push(entry.clone()),
+            Level::Debug => self.debug.push(entry.clone()),
+            Level::Info => self.info.push(entry.clone()),
+            Level::Warn => self.warn.push(entry.clone()),
+            Level::Error => self.error.push(entry.clone()),
+        }
+    }
+
+    pub fn for_level(&self, level: Level) -> &[Entry] {
+        match level {
+            Level::Trace => &self.trace,
+            Level::Debug => &self.debug,
+            Level::Info => &self.info,
+            Level::Warn => &self.warn,
+            Level::Error => &self.error,
+        }
+    }
+
+    pub fn to_json(&self) -> String {
+        format!(
+            "{{\"trace\":{},\"debug\":{},\"info\":{},\"warn\":{},\"error\":{}}}",
+            json_entry_array(&self.trace),
+            json_entry_array(&self.debug),
+            json_entry_array(&self.info),
+            json_entry_array(&self.warn),
+            json_entry_array(&self.error),
         )
     }
+}
+
+fn json_entry_array(entries: &[Entry]) -> String {
+    let items: Vec<String> = entries.iter().map(Entry::to_json).collect();
+    format!("[{}]", items.join(","))
 }
 
 fn json_opt_string(value: &Option<String>) -> String {
@@ -235,6 +294,30 @@ pub fn summarize_with_filters<'a, I: Iterator<Item = &'a str>>(
     since: Option<&str>,
     until: Option<&str>,
 ) -> Summary {
+    summarize_core(lines, min_level, since, until, None)
+}
+
+/// Same filtering as `summarize_with_filters`, but also keeps a copy of
+/// every entry that passed the filters, grouped by level. Costs more memory
+/// than the plain summary, so it's opt-in rather than the default.
+pub fn summarize_with_filters_and_lines<'a, I: Iterator<Item = &'a str>>(
+    lines: I,
+    min_level: Option<Level>,
+    since: Option<&str>,
+    until: Option<&str>,
+) -> (Summary, LevelLines) {
+    let mut level_lines = LevelLines::default();
+    let summary = summarize_core(lines, min_level, since, until, Some(&mut level_lines));
+    (summary, level_lines)
+}
+
+fn summarize_core<'a, I: Iterator<Item = &'a str>>(
+    lines: I,
+    min_level: Option<Level>,
+    since: Option<&str>,
+    until: Option<&str>,
+    mut collect: Option<&mut LevelLines>,
+) -> Summary {
     let mut summary = Summary::default();
     for line in lines {
         if line.trim().is_empty() {
@@ -245,6 +328,9 @@ pub fn summarize_with_filters<'a, I: Iterator<Item = &'a str>>(
             Some(entry) => {
                 if passes_filters(&entry, min_level, since, until) {
                     summary.record(&entry);
+                    if let Some(collector) = collect.as_mut() {
+                        collector.record(&entry);
+                    }
                 }
             }
             None => summary.unparsed_lines += 1,
@@ -370,5 +456,52 @@ mod tests {
             summary.first_timestamp.as_deref(),
             Some("2026-08-21T10:00:00Z")
         );
+    }
+
+    #[test]
+    fn collects_matching_lines_grouped_by_level() {
+        let text = "2026-08-21T10:00:00Z INFO up\n2026-08-21T10:00:01Z ERROR down\n2026-08-21T10:00:02Z ERROR still down\nnot a log line\n";
+        let (summary, lines) = summarize_with_filters_and_lines(text.lines(), None, None, None);
+        assert_eq!(summary.error, 2);
+        assert_eq!(lines.for_level(Level::Info).len(), 1);
+        assert_eq!(lines.for_level(Level::Error).len(), 2);
+        assert_eq!(lines.for_level(Level::Error)[0].message, "down");
+        assert_eq!(lines.for_level(Level::Error)[1].message, "still down");
+        assert!(lines.for_level(Level::Debug).is_empty());
+    }
+
+    #[test]
+    fn collected_lines_respect_the_same_filters_as_the_summary() {
+        let text = "2026-08-21T10:00:00Z INFO up\n2026-08-21T10:00:01Z ERROR down\n";
+        let (summary, lines) =
+            summarize_with_filters_and_lines(text.lines(), Some(Level::Error), None, None);
+        assert_eq!(summary.info, 0);
+        assert!(lines.for_level(Level::Info).is_empty());
+        assert_eq!(lines.for_level(Level::Error).len(), 1);
+    }
+
+    #[test]
+    fn level_lines_to_json_nests_entries_per_level() {
+        let text = "2026-08-21T10:00:00Z INFO up\n";
+        let (_, lines) = summarize_with_filters_and_lines(text.lines(), None, None, None);
+        assert_eq!(
+            lines.to_json(),
+            "{\"trace\":[],\"debug\":[],\"info\":[{\"timestamp\":\"2026-08-21T10:00:00Z\",\"level\":\"INFO\",\"message\":\"up\"}],\"warn\":[],\"error\":[]}"
+        );
+    }
+
+    #[test]
+    fn summary_to_json_nests_lines_when_given() {
+        let text = "2026-08-21T10:00:00Z INFO up\n";
+        let (summary, lines) = summarize_with_filters_and_lines(text.lines(), None, None, None);
+        let json = summary.to_json(Some(&lines));
+        assert!(json.contains("\"lines\":{"));
+        assert!(json.contains("\"info\":[{\"timestamp\""));
+    }
+
+    #[test]
+    fn summary_to_json_omits_lines_when_not_given() {
+        let summary = summarize(std::iter::empty());
+        assert!(!summary.to_json(None).contains("\"lines\""));
     }
 }

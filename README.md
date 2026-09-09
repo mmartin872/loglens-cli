@@ -96,6 +96,20 @@ $ loglens server.log --json
 Both modes are backed by the same `Summary` struct, so the two outputs
 never drift apart in what they report.
 
+Add `--lines` to keep the matching entries themselves, grouped by level,
+instead of just their counts - useful for scripting, e.g. pulling every
+error line out of a file with `jq`:
+
+```
+$ loglens server.log --lines --json
+{"total_lines":3,"unparsed_lines":0,"trace":0,"debug":0,"info":1,"warn":1,"error":1,"first_timestamp":"2026-08-21T10:15:03Z","last_timestamp":"2026-08-21T10:16:41Z","lines":{"trace":[],"debug":[],"info":[{"timestamp":"2026-08-21T10:15:03Z","level":"INFO","message":"server started on port 8080"}],"warn":[{"timestamp":"2026-08-21T10:15:04Z","level":"WARN","message":"client disconnected early"}],"error":[{"timestamp":"2026-08-21T10:16:41Z","level":"ERROR","message":"failed to write segment: disk full"}]}}
+```
+
+Without `--json`, `--lines` adds a "matching lines" section under the
+counts, grouped by level. `--lines` respects `--min-level`, `--since`,
+and `--until` the same way the counts do - it's the same filtered set of
+entries, just kept instead of only tallied.
+
 Add `--follow` (or `-f`) to watch a file the way `tail -f` does, instead
 of summarizing it once. Rather than printing a running summary,
 `loglens` prints each new matching entry as it lands - a summary that
@@ -136,6 +150,4 @@ cargo build --release
 
 ## Status
 
-Early. See the project's issue tracker for what's planned next - a
-per-level JSON array of matching lines for scripting is the near-term
-target.
+Early. Still deciding what the next filter or output shape should be.
