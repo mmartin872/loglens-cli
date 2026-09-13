@@ -14,6 +14,7 @@ struct Args {
     path: String,
     json: bool,
     min_level: Option<Level>,
+    level: Option<Level>,
     since: Option<String>,
     until: Option<String>,
     follow: bool,
@@ -24,6 +25,7 @@ fn parse_args() -> Result<Args, String> {
     let mut path = None;
     let mut json = false;
     let mut min_level = None;
+    let mut level = None;
     let mut since = None;
     let mut until = None;
     let mut follow = false;
@@ -41,6 +43,15 @@ fn parse_args() -> Result<Args, String> {
                     .next()
                     .ok_or_else(|| format!("--min-level needs a value\n\n{}", usage()))?;
                 min_level = Some(
+                    Level::parse(&value)
+                        .ok_or_else(|| format!("unrecognized level: {value}\n\n{}", usage()))?,
+                );
+            }
+            "--level" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| format!("--level needs a value\n\n{}", usage()))?;
+                level = Some(
                     Level::parse(&value)
                         .ok_or_else(|| format!("unrecognized level: {value}\n\n{}", usage()))?,
                 );
@@ -69,6 +80,7 @@ fn parse_args() -> Result<Args, String> {
         path,
         json,
         min_level,
+        level,
         since,
         until,
         follow,
@@ -77,7 +89,7 @@ fn parse_args() -> Result<Args, String> {
 }
 
 fn usage() -> String {
-    "usage: loglens <file> [--json] [--min-level LEVEL] [--since TIMESTAMP] [--until TIMESTAMP] [--follow] [--lines]"
+    "usage: loglens <file> [--json] [--min-level LEVEL] [--level LEVEL] [--since TIMESTAMP] [--until TIMESTAMP] [--follow] [--lines]"
         .to_string()
 }
 
@@ -112,6 +124,7 @@ fn main() -> ExitCode {
         let (summary, level_lines) = summarize_with_filters_and_lines(
             contents.lines(),
             args.min_level,
+            args.level,
             args.since.as_deref(),
             args.until.as_deref(),
         );
@@ -120,6 +133,7 @@ fn main() -> ExitCode {
         let summary = summarize_with_filters(
             contents.lines(),
             args.min_level,
+            args.level,
             args.since.as_deref(),
             args.until.as_deref(),
         );
@@ -133,6 +147,7 @@ fn main() -> ExitCode {
             &args.path,
             &summary,
             args.min_level,
+            args.level,
             args.since.as_deref(),
             args.until.as_deref(),
             level_lines.as_ref(),
@@ -146,6 +161,7 @@ fn print_human(
     path: &str,
     summary: &Summary,
     min_level: Option<Level>,
+    level: Option<Level>,
     since: Option<&str>,
     until: Option<&str>,
     level_lines: Option<&LevelLines>,
@@ -153,6 +169,9 @@ fn print_human(
     println!("{path}");
     if let Some(min_level) = min_level {
         println!("  min level:      {min_level}");
+    }
+    if let Some(level) = level {
+        println!("  level:          {level}");
     }
     if let Some(since) = since {
         println!("  since:          {since}");
@@ -267,6 +286,7 @@ fn print_follow_line(line: &str, args: &Args) {
     if !passes_filters(
         &entry,
         args.min_level,
+        args.level,
         args.since.as_deref(),
         args.until.as_deref(),
     ) {

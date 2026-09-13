@@ -57,6 +57,28 @@ Lines that don't parse at all still land in `unparsed_lines` regardless
 of `--min-level` - the filter only drops recognized levels below the
 threshold.
 
+Add `--level` when you want an exact match instead of a threshold - only
+that one level is kept, rather than everything at or above it:
+
+```
+$ loglens server.log --level warn
+server.log
+  level:          WARN
+  total lines:    3
+  unparsed lines: 0
+  trace: 0
+  debug: 0
+  info:  0
+  warn:  1
+  error: 0
+  first: 2026-08-21T10:15:04Z
+  last:  2026-08-21T10:15:04Z
+```
+
+`--level` and `--min-level` are independent filters - passing both keeps
+only entries that satisfy each one, though combining an exact level with
+a threshold rarely makes sense in practice.
+
 Add `--since` and/or `--until` to restrict the summary to a timestamp
 range, inclusive on both ends:
 
@@ -106,9 +128,9 @@ $ loglens server.log --lines --json
 ```
 
 Without `--json`, `--lines` adds a "matching lines" section under the
-counts, grouped by level. `--lines` respects `--min-level`, `--since`,
-and `--until` the same way the counts do - it's the same filtered set of
-entries, just kept instead of only tallied.
+counts, grouped by level. `--lines` respects `--min-level`, `--level`,
+`--since`, and `--until` the same way the counts do - it's the same
+filtered set of entries, just kept instead of only tallied.
 
 Add `--follow` (or `-f`) to watch a file the way `tail -f` does, instead
 of summarizing it once. Rather than printing a running summary,
@@ -121,8 +143,9 @@ $ loglens server.log --follow
 2026-08-21T10:15:04Z WARN client disconnected early
 ```
 
-`--min-level`, `--since`, and `--until` still apply, so `--follow
---min-level warn` watches a file for warnings and errors only. `--json`
+`--min-level`, `--level`, `--since`, and `--until` still apply, so
+`--follow --min-level warn` watches a file for warnings and errors only,
+or `--follow --level error` for errors alone. `--json`
 switches each printed entry to a single-line JSON object instead of the
 plain-text form. Unparsed and blank lines are skipped rather than
 printed, same as they're excluded from the level counts in the
