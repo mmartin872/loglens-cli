@@ -240,19 +240,24 @@ fn json_string(value: &str) -> String {
     out
 }
 
-/// Check whether a parsed entry should be kept under the given level and
-/// timestamp-range filters. Shared between the one-shot summary path and
-/// `--follow`, so the two never disagree about what counts as "in range".
+/// Check whether a parsed entry should be kept under the given level,
+/// timestamp-range, and message filters. Shared between the one-shot summary
+/// path and `--follow`, so the two never disagree about what counts as "in
+/// range".
 ///
 /// `min_level` and `level` are independent: `min_level` is a threshold
 /// (this level or above), `level` is an exact match. Passing both is legal
 /// - the entry has to satisfy each one that's set.
+///
+/// `grep`, when set, keeps only entries whose message contains it as a
+/// plain, case-sensitive substring - no regex.
 pub fn passes_filters(
     entry: &Entry,
     min_level: Option<Level>,
     level: Option<Level>,
     since: Option<&str>,
     until: Option<&str>,
+    grep: Option<&str>,
 ) -> bool {
     let min_level_ok = min_level.map_or(true, |min| entry.level >= min);
     let level_ok = level.map_or(true, |exact| entry.level == exact);
@@ -262,12 +267,13 @@ pub fn passes_filters(
     let until_ok = until.map_or(true, |u| {
         timestamp::compare(&entry.timestamp, u) != std::cmp::Ordering::Greater
     });
-    min_level_ok && level_ok && since_ok && until_ok
+    let grep_ok = grep.map_or(true, |needle| entry.message.contains(needle));
+    min_level_ok && level_ok && since_ok && until_ok && grep_ok
 }
 
 /// Summarize a full log file's contents, one line at a time.
 pub fn summarize<'a, I: Iterator<Item = &'a str>>(lines: I) -> Summary {
-    summarize_with_filters(lines, None, None, None)
+    summarize_with_filters(lines, None, None, None, None, None)
 }
 
 /// Summarize a full log file's contents, dropping any parsed entry below
@@ -278,13 +284,13 @@ pub fn summarize_with_min_level<'a, I: Iterator<Item = &'a str>>(
     lines: I,
     min_level: Option<Level>,
 ) -> Summary {
-    summarize_with_filters(lines, min_level, None, None, None)
+    summarize_with_filters(lines, min_level, None, None, None, None)
 }
 
 /// Summarize a full log file's contents, dropping any parsed entry that
-/// falls below `min_level`, doesn't exactly match `level`, or falls outside
-/// the `[since, until]` timestamp range, from the per-level counts and the
-/// first/last timestamp span.
+/// falls below `min_level`, doesn't exactly match `level`, falls outside the
+/// `[since, until]` timestamp range, or whose message doesn't contain `grep`,
+/// from the per-level counts and the first/last timestamp span.
 ///
 /// `since` and `until` are inclusive on both ends. Timestamps in a
 /// recognized shape (RFC 3339 with `Z` or a numeric offset, or bare Unix
@@ -292,6 +298,9 @@ pub fn summarize_with_min_level<'a, I: Iterator<Item = &'a str>>(
 /// regardless of which of those shapes each side uses. Anything else falls
 /// back to a plain string comparison, which only orders correctly for
 /// formats that happen to sort the same as text.
+///
+/// `grep` is a plain, case-sensitive substring match against the message,
+/// not a regex.
 ///
 /// Lines that don't parse at all still count toward `unparsed_lines`
 /// regardless of any filter - filters only apply to recognized levels.
@@ -301,8 +310,9 @@ pub fn summarize_with_filters<'a, I: Iterator<Item = &'a str>>(
     level: Option<Level>,
     since: Option<&str>,
     until: Option<&str>,
+    grep: Option<&str>,
 ) -> Summary {
-    summarize_core(lines, min_level, level, since, until, None)
+    summarize_core(lines, min_level, level, since, until, grep, None)
 }
 
 /// Same filtering as `summarize_with_filters`, but also keeps a copy of
@@ -314,9 +324,18 @@ pub fn summarize_with_filters_and_lines<'a, I: Iterator<Item = &'a str>>(
     level: Option<Level>,
     since: Option<&str>,
     until: Option<&str>,
+    grep: Option<&str>,
 ) -> (Summary, LevelLines) {
     let mut level_lines = LevelLines::default();
-    let summary = summarize_core(lines, min_level, level, since, until, Some(&mut level_lines));
+    let summary = summarize_core(
+        lines,
+        min_level,
+        level,
+        since,
+        until,
+        grep,
+        Some(&mut level_lines),
+    );
     (summary, level_lines)
 }
 
@@ -326,6 +345,7 @@ fn summarize_core<'a, I: Iterator<Item = &'a str>>(
     level: Option<Level>,
     since: Option<&str>,
     until: Option<&str>,
+    grep: Option<&str>,
     mut collect: Option<&mut LevelLines>,
 ) -> Summary {
     let mut summary = Summary::default();
@@ -336,7 +356,7 @@ fn summarize_core<'a, I: Iterator<Item = &'a str>>(
         summary.total_lines += 1;
         match parse_line(line) {
             Some(entry) => {
-                if passes_filters(&entry, min_level, level, since, until) {
+                if passes_filters(&entry, min_level, level, since, until, grep) {
                     summary.record(&entry);
                     if let Some(collector) = collect.as_mut() {
                         collector.record(&entry);
@@ -409,7 +429,8 @@ mod tests {
     #[test]
     fn exact_level_keeps_only_that_level_unlike_min_level() {
         let text = "2026-08-21T10:00:00Z INFO up\n2026-08-21T10:00:01Z WARN careful\n2026-08-21T10:00:02Z ERROR down\n";
-        let summary = summarize_with_filters(text.lines(), None, Some(Level::Warn), None, None);
+        let summary =
+            summarize_with_filters(text.lines(), None, Some(Level::Warn), None, None, None);
         assert_eq!(summary.total_lines, 3);
         assert_eq!(summary.info, 0);
         assert_eq!(summary.warn, 1);
@@ -423,7 +444,8 @@ mod tests {
     #[test]
     fn exact_level_still_counts_unparsed_lines() {
         let text = "not a log line\n2026-08-21T10:00:00Z INFO up\n";
-        let summary = summarize_with_filters(text.lines(), None, Some(Level::Error), None, None);
+        let summary =
+            summarize_with_filters(text.lines(), None, Some(Level::Error), None, None, None);
         assert_eq!(summary.total_lines, 2);
         assert_eq!(summary.unparsed_lines, 1);
         assert_eq!(summary.info, 0);
@@ -438,6 +460,7 @@ mod tests {
             Some(Level::Warn),
             Some("2026-08-21T09:00:00Z"),
             Some("2026-08-21T11:00:00Z"),
+            None,
         );
         assert_eq!(summary.warn, 1);
         assert_eq!(summary.error, 0);
@@ -452,6 +475,7 @@ mod tests {
             None,
             Some("2026-08-21T09:30:00Z"),
             Some("2026-08-21T10:30:00Z"),
+            None,
         );
         assert_eq!(summary.total_lines, 3);
         assert_eq!(summary.info, 1);
@@ -474,6 +498,7 @@ mod tests {
             None,
             Some("2026-08-21T10:00:00Z"),
             Some("2026-08-21T10:00:00Z"),
+            None,
         );
         assert_eq!(summary.info, 1);
     }
@@ -483,7 +508,8 @@ mod tests {
         // Log lines are RFC 3339; the --since bound is given as Unix epoch
         // seconds for the same instant as the second line.
         let text = "2026-08-21T09:00:00Z INFO early\n2026-08-21T10:15:03Z INFO on the bound\n2026-08-21T11:00:00Z INFO late\n";
-        let summary = summarize_with_filters(text.lines(), None, None, Some("1787307303"), None);
+        let summary =
+            summarize_with_filters(text.lines(), None, None, Some("1787307303"), None, None);
         assert_eq!(summary.info, 2);
         assert_eq!(
             summary.first_timestamp.as_deref(),
@@ -500,6 +526,7 @@ mod tests {
             None,
             Some("2026-08-21T09:00:00Z"),
             Some("2026-08-21T11:00:00Z"),
+            None,
         );
         assert_eq!(summary.error, 1);
         assert_eq!(
@@ -509,10 +536,59 @@ mod tests {
     }
 
     #[test]
+    fn grep_keeps_only_messages_containing_the_substring() {
+        let text = "2026-08-21T10:00:00Z INFO server started\n2026-08-21T10:00:01Z ERROR disk full\n2026-08-21T10:00:02Z INFO server stopped\n";
+        let summary = summarize_with_filters(text.lines(), None, None, None, None, Some("server"));
+        assert_eq!(summary.total_lines, 3);
+        assert_eq!(summary.info, 2);
+        assert_eq!(summary.error, 0);
+        assert_eq!(
+            summary.first_timestamp.as_deref(),
+            Some("2026-08-21T10:00:00Z")
+        );
+        assert_eq!(
+            summary.last_timestamp.as_deref(),
+            Some("2026-08-21T10:00:02Z")
+        );
+    }
+
+    #[test]
+    fn grep_is_case_sensitive() {
+        let text = "2026-08-21T10:00:00Z INFO Server started\n";
+        let summary = summarize_with_filters(text.lines(), None, None, None, None, Some("server"));
+        assert_eq!(summary.info, 0);
+    }
+
+    #[test]
+    fn grep_still_counts_unparsed_lines() {
+        let text = "not a log line\n2026-08-21T10:00:00Z INFO server started\n";
+        let summary =
+            summarize_with_filters(text.lines(), None, None, None, None, Some("nowhere"));
+        assert_eq!(summary.total_lines, 2);
+        assert_eq!(summary.unparsed_lines, 1);
+        assert_eq!(summary.info, 0);
+    }
+
+    #[test]
+    fn grep_combines_with_level_and_time_range() {
+        let text = "2026-08-21T10:00:00Z WARN disk nearly full\n2026-08-21T10:00:01Z ERROR disk full\n2026-08-21T12:00:00Z WARN disk nearly full but late\n";
+        let summary = summarize_with_filters(
+            text.lines(),
+            None,
+            Some(Level::Warn),
+            Some("2026-08-21T09:00:00Z"),
+            Some("2026-08-21T11:00:00Z"),
+            Some("disk"),
+        );
+        assert_eq!(summary.warn, 1);
+        assert_eq!(summary.error, 0);
+    }
+
+    #[test]
     fn collects_matching_lines_grouped_by_level() {
         let text = "2026-08-21T10:00:00Z INFO up\n2026-08-21T10:00:01Z ERROR down\n2026-08-21T10:00:02Z ERROR still down\nnot a log line\n";
         let (summary, lines) =
-            summarize_with_filters_and_lines(text.lines(), None, None, None, None);
+            summarize_with_filters_and_lines(text.lines(), None, None, None, None, None);
         assert_eq!(summary.error, 2);
         assert_eq!(lines.for_level(Level::Info).len(), 1);
         assert_eq!(lines.for_level(Level::Error).len(), 2);
@@ -524,8 +600,14 @@ mod tests {
     #[test]
     fn collected_lines_respect_the_same_filters_as_the_summary() {
         let text = "2026-08-21T10:00:00Z INFO up\n2026-08-21T10:00:01Z ERROR down\n";
-        let (summary, lines) =
-            summarize_with_filters_and_lines(text.lines(), Some(Level::Error), None, None, None);
+        let (summary, lines) = summarize_with_filters_and_lines(
+            text.lines(),
+            Some(Level::Error),
+            None,
+            None,
+            None,
+            None,
+        );
         assert_eq!(summary.info, 0);
         assert!(lines.for_level(Level::Info).is_empty());
         assert_eq!(lines.for_level(Level::Error).len(), 1);
@@ -534,7 +616,8 @@ mod tests {
     #[test]
     fn level_lines_to_json_nests_entries_per_level() {
         let text = "2026-08-21T10:00:00Z INFO up\n";
-        let (_, lines) = summarize_with_filters_and_lines(text.lines(), None, None, None, None);
+        let (_, lines) =
+            summarize_with_filters_and_lines(text.lines(), None, None, None, None, None);
         assert_eq!(
             lines.to_json(),
             "{\"trace\":[],\"debug\":[],\"info\":[{\"timestamp\":\"2026-08-21T10:00:00Z\",\"level\":\"INFO\",\"message\":\"up\"}],\"warn\":[],\"error\":[]}"
@@ -545,7 +628,7 @@ mod tests {
     fn summary_to_json_nests_lines_when_given() {
         let text = "2026-08-21T10:00:00Z INFO up\n";
         let (summary, lines) =
-            summarize_with_filters_and_lines(text.lines(), None, None, None, None);
+            summarize_with_filters_and_lines(text.lines(), None, None, None, None, None);
         let json = summary.to_json(Some(&lines));
         assert!(json.contains("\"lines\":{"));
         assert!(json.contains("\"info\":[{\"timestamp\""));

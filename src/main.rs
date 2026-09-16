@@ -19,6 +19,7 @@ struct Args {
     until: Option<String>,
     follow: bool,
     lines: bool,
+    grep: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -30,6 +31,7 @@ fn parse_args() -> Result<Args, String> {
     let mut until = None;
     let mut follow = false;
     let mut lines = false;
+    let mut grep = None;
 
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -68,6 +70,12 @@ fn parse_args() -> Result<Args, String> {
                         .ok_or_else(|| format!("--until needs a timestamp\n\n{}", usage()))?,
                 );
             }
+            "--grep" | "--message-contains" => {
+                grep = Some(
+                    args.next()
+                        .ok_or_else(|| format!("{arg} needs a value\n\n{}", usage()))?,
+                );
+            }
             other if other.starts_with('-') => {
                 return Err(format!("unrecognized flag: {other}\n\n{}", usage()))
             }
@@ -85,11 +93,12 @@ fn parse_args() -> Result<Args, String> {
         until,
         follow,
         lines,
+        grep,
     })
 }
 
 fn usage() -> String {
-    "usage: loglens <file> [--json] [--min-level LEVEL] [--level LEVEL] [--since TIMESTAMP] [--until TIMESTAMP] [--follow] [--lines]"
+    "usage: loglens <file> [--json] [--min-level LEVEL] [--level LEVEL] [--since TIMESTAMP] [--until TIMESTAMP] [--grep TEXT] [--follow] [--lines]"
         .to_string()
 }
 
@@ -127,6 +136,7 @@ fn main() -> ExitCode {
             args.level,
             args.since.as_deref(),
             args.until.as_deref(),
+            args.grep.as_deref(),
         );
         (summary, Some(level_lines))
     } else {
@@ -136,6 +146,7 @@ fn main() -> ExitCode {
             args.level,
             args.since.as_deref(),
             args.until.as_deref(),
+            args.grep.as_deref(),
         );
         (summary, None)
     };
@@ -150,6 +161,7 @@ fn main() -> ExitCode {
             args.level,
             args.since.as_deref(),
             args.until.as_deref(),
+            args.grep.as_deref(),
             level_lines.as_ref(),
         );
     }
@@ -164,6 +176,7 @@ fn print_human(
     level: Option<Level>,
     since: Option<&str>,
     until: Option<&str>,
+    grep: Option<&str>,
     level_lines: Option<&LevelLines>,
 ) {
     println!("{path}");
@@ -178,6 +191,9 @@ fn print_human(
     }
     if let Some(until) = until {
         println!("  until:          {until}");
+    }
+    if let Some(grep) = grep {
+        println!("  grep:           {grep}");
     }
     println!("  total lines:    {}", summary.total_lines);
     println!("  unparsed lines: {}", summary.unparsed_lines);
@@ -289,6 +305,7 @@ fn print_follow_line(line: &str, args: &Args) {
         args.level,
         args.since.as_deref(),
         args.until.as_deref(),
+        args.grep.as_deref(),
     ) {
         return;
     }

@@ -129,8 +129,31 @@ $ loglens server.log --lines --json
 
 Without `--json`, `--lines` adds a "matching lines" section under the
 counts, grouped by level. `--lines` respects `--min-level`, `--level`,
-`--since`, and `--until` the same way the counts do - it's the same
-filtered set of entries, just kept instead of only tallied.
+`--since`, `--until`, and `--grep` the same way the counts do - it's the
+same filtered set of entries, just kept instead of only tallied.
+
+Add `--grep` (or `--message-contains`) to keep only entries whose message
+contains a substring - a plain, case-sensitive match, not a regex:
+
+```
+$ loglens server.log --grep "disk full"
+server.log
+  grep:           disk full
+  total lines:    3
+  unparsed lines: 0
+  trace: 0
+  debug: 0
+  info:  0
+  warn:  0
+  error: 1
+  first: 2026-08-21T10:16:41Z
+  last:  2026-08-21T10:16:41Z
+```
+
+`--grep` combines with `--min-level`, `--level`, `--since`, and `--until`
+the same way they combine with each other - an entry has to satisfy every
+filter that's set. It also applies to `--lines` and `--follow` output.
+Lines that don't parse still land in `unparsed_lines` regardless of `--grep`.
 
 Add `--follow` (or `-f`) to watch a file the way `tail -f` does, instead
 of summarizing it once. Rather than printing a running summary,
@@ -143,7 +166,7 @@ $ loglens server.log --follow
 2026-08-21T10:15:04Z WARN client disconnected early
 ```
 
-`--min-level`, `--level`, `--since`, and `--until` still apply, so
+`--min-level`, `--level`, `--since`, `--until`, and `--grep` still apply, so
 `--follow --min-level warn` watches a file for warnings and errors only,
 or `--follow --level error` for errors alone. `--json`
 switches each printed entry to a single-line JSON object instead of the
