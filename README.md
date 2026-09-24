@@ -176,6 +176,35 @@ one-shot summary. If the file shrinks - truncated or replaced by log
 rotation - `loglens` notices and starts reading from the top again.
 `--follow` runs until you stop it (Ctrl-C).
 
+## Default flags via environment variables
+
+Any flag left off the command line falls back to an environment variable,
+so a shell profile can set defaults you don't want to type every time:
+
+```
+$ export LOGLENS_MIN_LEVEL=warn
+$ export LOGLENS_JSON=1
+$ loglens server.log
+```
+
+is the same as passing `--min-level warn --json` explicitly. A flag
+actually passed on the command line always overrides the environment.
+
+| Flag           | Environment variable |
+|----------------|-----------------------|
+| `--json`       | `LOGLENS_JSON`        |
+| `--follow`     | `LOGLENS_FOLLOW`      |
+| `--lines`      | `LOGLENS_LINES`       |
+| `--min-level`  | `LOGLENS_MIN_LEVEL`   |
+| `--level`      | `LOGLENS_LEVEL`       |
+| `--since`      | `LOGLENS_SINCE`       |
+| `--until`      | `LOGLENS_UNTIL`       |
+| `--grep`       | `LOGLENS_GREP`        |
+
+For `LOGLENS_JSON`, `LOGLENS_FOLLOW`, and `LOGLENS_LINES`, any value other
+than empty, `0`, or `false` counts as set - `LOGLENS_JSON=1` and
+`LOGLENS_JSON=true` both turn `--json` on.
+
 ## As a library
 
 ```rust

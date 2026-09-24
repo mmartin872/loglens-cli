@@ -98,18 +98,79 @@ fn parse_args() -> Result<Args, String> {
 }
 
 fn usage() -> String {
-    "usage: loglens <file> [--json] [--min-level LEVEL] [--level LEVEL] [--since TIMESTAMP] [--until TIMESTAMP] [--grep TEXT] [--follow] [--lines]"
+    "usage: loglens <file> [--json] [--min-level LEVEL] [--level LEVEL] [--since TIMESTAMP] [--until TIMESTAMP] [--grep TEXT] [--follow] [--lines]\n\n\
+     Flags not passed on the command line fall back to environment variables:\n\
+     LOGLENS_JSON, LOGLENS_FOLLOW, LOGLENS_LINES (any value other than empty, \"0\", or \"false\" counts as set),\n\
+     LOGLENS_MIN_LEVEL, LOGLENS_LEVEL, LOGLENS_SINCE, LOGLENS_UNTIL, LOGLENS_GREP."
         .to_string()
 }
 
+/// Fill in any flag the CLI left unset from its matching environment
+/// variable, so a shell profile or wrapper script can set defaults (e.g.
+/// `LOGLENS_MIN_LEVEL=warn`) without every invocation having to repeat them.
+/// A flag actually passed on the command line always wins.
+fn apply_env_defaults<F>(args: &mut Args, mut lookup: F) -> Result<(), String>
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    if !args.json {
+        args.json = env_flag(&mut lookup, "LOGLENS_JSON");
+    }
+    if !args.follow {
+        args.follow = env_flag(&mut lookup, "LOGLENS_FOLLOW");
+    }
+    if !args.lines {
+        args.lines = env_flag(&mut lookup, "LOGLENS_LINES");
+    }
+    if args.min_level.is_none() {
+        if let Some(value) = lookup("LOGLENS_MIN_LEVEL") {
+            args.min_level = Some(Level::parse(&value).ok_or_else(|| {
+                format!("LOGLENS_MIN_LEVEL: unrecognized level: {value}\n\n{}", usage())
+            })?);
+        }
+    }
+    if args.level.is_none() {
+        if let Some(value) = lookup("LOGLENS_LEVEL") {
+            args.level = Some(Level::parse(&value).ok_or_else(|| {
+                format!("LOGLENS_LEVEL: unrecognized level: {value}\n\n{}", usage())
+            })?);
+        }
+    }
+    if args.since.is_none() {
+        args.since = lookup("LOGLENS_SINCE");
+    }
+    if args.until.is_none() {
+        args.until = lookup("LOGLENS_UNTIL");
+    }
+    if args.grep.is_none() {
+        args.grep = lookup("LOGLENS_GREP");
+    }
+    Ok(())
+}
+
+fn env_flag<F>(lookup: &mut F, name: &str) -> bool
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    match lookup(name) {
+        Some(value) => !matches!(value.as_str(), "" | "0" | "false" | "FALSE" | "False"),
+        None => false,
+    }
+}
+
 fn main() -> ExitCode {
-    let args = match parse_args() {
+    let mut args = match parse_args() {
         Ok(args) => args,
         Err(message) => {
             eprintln!("{message}");
             return ExitCode::FAILURE;
         }
     };
+
+    if let Err(message) = apply_env_defaults(&mut args, |name| env::var(name).ok()) {
+        eprintln!("{message}");
+        return ExitCode::FAILURE;
+    }
 
     if args.follow {
         return match run_follow(&args) {
@@ -341,5 +402,76 @@ mod tests {
         let mut buffer = String::from("a\nb\nc\n");
         let lines = split_complete_lines(&mut buffer);
         assert_eq!(lines, vec!["a", "b", "c"]);
+    }
+
+    fn bare_args(path: &str) -> Args {
+        Args {
+            path: path.to_string(),
+            json: false,
+            min_level: None,
+            level: None,
+            since: None,
+            until: None,
+            follow: false,
+            lines: false,
+            grep: None,
+        }
+    }
+
+    fn env_map(pairs: &[(&str, &str)]) -> impl FnMut(&str) -> Option<String> {
+        let pairs: Vec<(String, String)> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        move |name| {
+            pairs
+                .iter()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v.clone())
+        }
+    }
+
+    #[test]
+    fn env_defaults_fill_in_unset_flags() {
+        let mut args = bare_args("server.log");
+        apply_env_defaults(
+            &mut args,
+            env_map(&[
+                ("LOGLENS_JSON", "1"),
+                ("LOGLENS_MIN_LEVEL", "warn"),
+                ("LOGLENS_GREP", "disk"),
+            ]),
+        )
+        .unwrap();
+        assert!(args.json);
+        assert_eq!(args.min_level, Some(Level::Warn));
+        assert_eq!(args.grep.as_deref(), Some("disk"));
+        assert!(!args.follow);
+    }
+
+    #[test]
+    fn a_flag_set_on_the_command_line_wins_over_the_environment() {
+        let mut args = bare_args("server.log");
+        args.min_level = Some(Level::Error);
+        apply_env_defaults(&mut args, env_map(&[("LOGLENS_MIN_LEVEL", "warn")])).unwrap();
+        assert_eq!(args.min_level, Some(Level::Error));
+    }
+
+    #[test]
+    fn env_bool_flags_treat_zero_and_false_as_unset() {
+        let mut args = bare_args("server.log");
+        apply_env_defaults(&mut args, env_map(&[("LOGLENS_JSON", "0")])).unwrap();
+        assert!(!args.json);
+
+        let mut args = bare_args("server.log");
+        apply_env_defaults(&mut args, env_map(&[("LOGLENS_LINES", "false")])).unwrap();
+        assert!(!args.lines);
+    }
+
+    #[test]
+    fn env_min_level_rejects_an_unrecognized_level() {
+        let mut args = bare_args("server.log");
+        let result = apply_env_defaults(&mut args, env_map(&[("LOGLENS_MIN_LEVEL", "nonsense")]));
+        assert!(result.is_err());
     }
 }
