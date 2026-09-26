@@ -205,6 +205,27 @@ For `LOGLENS_JSON`, `LOGLENS_FOLLOW`, and `LOGLENS_LINES`, any value other
 than empty, `0`, or `false` counts as set - `LOGLENS_JSON=1` and
 `LOGLENS_JSON=true` both turn `--json` on.
 
+## Default flags via a config file
+
+Add `--config PATH` to fall back to a file instead of (or alongside) the
+environment variables above. The format is one `KEY=VALUE` per line, blank
+lines and `#` comments ignored:
+
+```
+# server.log defaults
+min_level = warn
+json = true
+grep = disk
+```
+
+Keys match the environment variable names, case-insensitively, with or
+without the `LOGLENS_` prefix - `min_level`, `MIN_LEVEL`, and
+`LOGLENS_MIN_LEVEL` all set the same thing. Precedence is command-line flag,
+then environment variable, then config file - a flag set by an earlier
+source is never overwritten by a later one, so `--config` is a good place
+for defaults you want to check into a project and override per-shell with
+an environment variable when needed.
+
 ## As a library
 
 ```rust

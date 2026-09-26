@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::env;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
@@ -20,6 +21,7 @@ struct Args {
     follow: bool,
     lines: bool,
     grep: Option<String>,
+    config: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -32,6 +34,7 @@ fn parse_args() -> Result<Args, String> {
     let mut follow = false;
     let mut lines = false;
     let mut grep = None;
+    let mut config = None;
 
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -40,6 +43,12 @@ fn parse_args() -> Result<Args, String> {
             "--follow" | "-f" => follow = true,
             "--lines" => lines = true,
             "-h" | "--help" => return Err(usage()),
+            "--config" => {
+                config = Some(
+                    args.next()
+                        .ok_or_else(|| format!("--config needs a path\n\n{}", usage()))?,
+                );
+            }
             "--min-level" => {
                 let value = args
                     .next()
@@ -94,22 +103,29 @@ fn parse_args() -> Result<Args, String> {
         follow,
         lines,
         grep,
+        config,
     })
 }
 
 fn usage() -> String {
-    "usage: loglens <file> [--json] [--min-level LEVEL] [--level LEVEL] [--since TIMESTAMP] [--until TIMESTAMP] [--grep TEXT] [--follow] [--lines]\n\n\
+    "usage: loglens <file> [--json] [--min-level LEVEL] [--level LEVEL] [--since TIMESTAMP] [--until TIMESTAMP] [--grep TEXT] [--follow] [--lines] [--config PATH]\n\n\
      Flags not passed on the command line fall back to environment variables:\n\
      LOGLENS_JSON, LOGLENS_FOLLOW, LOGLENS_LINES (any value other than empty, \"0\", or \"false\" counts as set),\n\
-     LOGLENS_MIN_LEVEL, LOGLENS_LEVEL, LOGLENS_SINCE, LOGLENS_UNTIL, LOGLENS_GREP."
+     LOGLENS_MIN_LEVEL, LOGLENS_LEVEL, LOGLENS_SINCE, LOGLENS_UNTIL, LOGLENS_GREP.\n\n\
+     Flags still unset after that fall back to --config's file, one KEY=VALUE\n\
+     per line (same names as the environment variables above, with or without\n\
+     the LOGLENS_ prefix, case-insensitive). Precedence is CLI flag, then\n\
+     environment variable, then config file."
         .to_string()
 }
 
-/// Fill in any flag the CLI left unset from its matching environment
-/// variable, so a shell profile or wrapper script can set defaults (e.g.
+/// Fill in any flag the CLI left unset from a KEY=VALUE source, so a shell
+/// profile, wrapper script, or config file can set defaults (e.g.
 /// `LOGLENS_MIN_LEVEL=warn`) without every invocation having to repeat them.
-/// A flag actually passed on the command line always wins.
-fn apply_env_defaults<F>(args: &mut Args, mut lookup: F) -> Result<(), String>
+/// A flag already set - by an earlier call to this function, or by the CLI -
+/// always wins, which is what lets `main` call this once for the environment
+/// and again for `--config`'s file and get CLI > env > config file for free.
+fn apply_defaults<F>(args: &mut Args, mut lookup: F) -> Result<(), String>
 where
     F: FnMut(&str) -> Option<String>,
 {
@@ -158,6 +174,33 @@ where
     }
 }
 
+/// Read a `--config` file: one `KEY=VALUE` per line, blank lines and `#`
+/// comments ignored. Keys match the `LOGLENS_*` environment variable names,
+/// with or without the prefix and in any case, so `min_level = warn` and
+/// `LOGLENS_MIN_LEVEL = warn` mean the same thing.
+fn parse_config_file(path: &str) -> Result<HashMap<String, String>, String> {
+    let contents =
+        fs::read_to_string(path).map_err(|e| format!("couldn't read config file {path}: {e}"))?;
+    let mut values = HashMap::new();
+    for (number, raw_line) in contents.lines().enumerate() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (key, value) = line.split_once('=').ok_or_else(|| {
+            format!("{path}:{}: expected KEY=VALUE, got: {raw_line}", number + 1)
+        })?;
+        values.insert(config_key(key), value.trim().to_string());
+    }
+    Ok(values)
+}
+
+fn config_key(raw: &str) -> String {
+    let upper = raw.trim().to_ascii_uppercase();
+    let stripped = upper.strip_prefix("LOGLENS_").unwrap_or(&upper);
+    format!("LOGLENS_{stripped}")
+}
+
 fn main() -> ExitCode {
     let mut args = match parse_args() {
         Ok(args) => args,
@@ -167,9 +210,23 @@ fn main() -> ExitCode {
         }
     };
 
-    if let Err(message) = apply_env_defaults(&mut args, |name| env::var(name).ok()) {
+    if let Err(message) = apply_defaults(&mut args, |name| env::var(name).ok()) {
         eprintln!("{message}");
         return ExitCode::FAILURE;
+    }
+
+    if let Some(path) = args.config.clone() {
+        let config = match parse_config_file(&path) {
+            Ok(config) => config,
+            Err(message) => {
+                eprintln!("loglens: {message}");
+                return ExitCode::FAILURE;
+            }
+        };
+        if let Err(message) = apply_defaults(&mut args, |name| config.get(name).cloned()) {
+            eprintln!("{message}");
+            return ExitCode::FAILURE;
+        }
     }
 
     if args.follow {
@@ -415,6 +472,7 @@ mod tests {
             follow: false,
             lines: false,
             grep: None,
+            config: None,
         }
     }
 
@@ -434,7 +492,7 @@ mod tests {
     #[test]
     fn env_defaults_fill_in_unset_flags() {
         let mut args = bare_args("server.log");
-        apply_env_defaults(
+        apply_defaults(
             &mut args,
             env_map(&[
                 ("LOGLENS_JSON", "1"),
@@ -453,25 +511,80 @@ mod tests {
     fn a_flag_set_on_the_command_line_wins_over_the_environment() {
         let mut args = bare_args("server.log");
         args.min_level = Some(Level::Error);
-        apply_env_defaults(&mut args, env_map(&[("LOGLENS_MIN_LEVEL", "warn")])).unwrap();
+        apply_defaults(&mut args, env_map(&[("LOGLENS_MIN_LEVEL", "warn")])).unwrap();
         assert_eq!(args.min_level, Some(Level::Error));
     }
 
     #[test]
     fn env_bool_flags_treat_zero_and_false_as_unset() {
         let mut args = bare_args("server.log");
-        apply_env_defaults(&mut args, env_map(&[("LOGLENS_JSON", "0")])).unwrap();
+        apply_defaults(&mut args, env_map(&[("LOGLENS_JSON", "0")])).unwrap();
         assert!(!args.json);
 
         let mut args = bare_args("server.log");
-        apply_env_defaults(&mut args, env_map(&[("LOGLENS_LINES", "false")])).unwrap();
+        apply_defaults(&mut args, env_map(&[("LOGLENS_LINES", "false")])).unwrap();
         assert!(!args.lines);
     }
 
     #[test]
     fn env_min_level_rejects_an_unrecognized_level() {
         let mut args = bare_args("server.log");
-        let result = apply_env_defaults(&mut args, env_map(&[("LOGLENS_MIN_LEVEL", "nonsense")]));
+        let result = apply_defaults(&mut args, env_map(&[("LOGLENS_MIN_LEVEL", "nonsense")]));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn config_key_normalizes_prefix_and_case() {
+        assert_eq!(config_key("json"), "LOGLENS_JSON");
+        assert_eq!(config_key("JSON"), "LOGLENS_JSON");
+        assert_eq!(config_key("loglens_json"), "LOGLENS_JSON");
+        assert_eq!(config_key("  min_level  "), "LOGLENS_MIN_LEVEL");
+    }
+
+    #[test]
+    fn parse_config_file_reads_key_value_pairs_and_skips_comments_and_blanks() {
+        let path = std::env::temp_dir().join("loglens_test_config_basic.conf");
+        fs::write(
+            &path,
+            "# a comment\n\njson = true\nmin_level=warn\nLOGLENS_GREP = disk full\n",
+        )
+        .unwrap();
+        let values = parse_config_file(path.to_str().unwrap()).unwrap();
+        fs::remove_file(&path).unwrap();
+
+        assert_eq!(values.get("LOGLENS_JSON").map(String::as_str), Some("true"));
+        assert_eq!(
+            values.get("LOGLENS_MIN_LEVEL").map(String::as_str),
+            Some("warn")
+        );
+        assert_eq!(
+            values.get("LOGLENS_GREP").map(String::as_str),
+            Some("disk full")
+        );
+    }
+
+    #[test]
+    fn parse_config_file_rejects_a_line_without_an_equals_sign() {
+        let path = std::env::temp_dir().join("loglens_test_config_bad.conf");
+        fs::write(&path, "not a key value line\n").unwrap();
+        let result = parse_config_file(path.to_str().unwrap());
+        fs::remove_file(&path).unwrap();
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn config_file_defaults_only_fill_in_what_env_left_unset() {
+        let mut args = bare_args("server.log");
+        args.min_level = Some(Level::Error);
+        apply_defaults(&mut args, env_map(&[("LOGLENS_JSON", "1")])).unwrap();
+
+        let mut config = HashMap::new();
+        config.insert("LOGLENS_MIN_LEVEL".to_string(), "warn".to_string());
+        config.insert("LOGLENS_JSON".to_string(), "0".to_string());
+        apply_defaults(&mut args, |name| config.get(name).cloned()).unwrap();
+
+        assert_eq!(args.min_level, Some(Level::Error));
+        assert!(args.json);
     }
 }
