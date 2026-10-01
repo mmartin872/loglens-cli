@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
+use std::path::Path;
 use std::process::ExitCode;
 use std::thread;
 use std::time::Duration;
@@ -115,7 +116,8 @@ fn usage() -> String {
      Flags still unset after that fall back to --config's file, one KEY=VALUE\n\
      per line (same names as the environment variables above, with or without\n\
      the LOGLENS_ prefix, case-insensitive). Precedence is CLI flag, then\n\
-     environment variable, then config file."
+     environment variable, then config file. Without --config, ./.loglensrc is\n\
+     used if it exists."
         .to_string()
 }
 
@@ -195,6 +197,21 @@ fn parse_config_file(path: &str) -> Result<HashMap<String, String>, String> {
     Ok(values)
 }
 
+/// Looked up in the working directory when `--config` isn't given, so a
+/// project can check in its defaults and have them apply without a flag.
+const DEFAULT_CONFIG_PATH: &str = ".loglensrc";
+
+/// An explicit `--config` path is always used, and a missing file is then an
+/// error worth reporting. The default path is only used if it exists - most
+/// directories won't have one, and that shouldn't be a failure.
+fn resolve_config_path(explicit: Option<&str>, default: &str) -> Option<String> {
+    match explicit {
+        Some(path) => Some(path.to_string()),
+        None if Path::new(default).is_file() => Some(default.to_string()),
+        None => None,
+    }
+}
+
 fn config_key(raw: &str) -> String {
     let upper = raw.trim().to_ascii_uppercase();
     let stripped = upper.strip_prefix("LOGLENS_").unwrap_or(&upper);
@@ -215,7 +232,7 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    if let Some(path) = args.config.clone() {
+    if let Some(path) = resolve_config_path(args.config.as_deref(), DEFAULT_CONFIG_PATH) {
         let config = match parse_config_file(&path) {
             Ok(config) => config,
             Err(message) => {
@@ -571,6 +588,28 @@ mod tests {
         fs::remove_file(&path).unwrap();
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn explicit_config_path_is_used_even_if_the_file_is_missing() {
+        let resolved = resolve_config_path(Some("nope.conf"), "also-missing.conf");
+        assert_eq!(resolved.as_deref(), Some("nope.conf"));
+    }
+
+    #[test]
+    fn default_config_path_is_skipped_when_the_file_does_not_exist() {
+        let path = std::env::temp_dir().join("loglens_test_no_such_default.conf");
+        let _ = fs::remove_file(&path);
+        assert_eq!(resolve_config_path(None, path.to_str().unwrap()), None);
+    }
+
+    #[test]
+    fn default_config_path_is_used_when_the_file_exists() {
+        let path = std::env::temp_dir().join("loglens_test_default_present.conf");
+        fs::write(&path, "json = true\n").unwrap();
+        let resolved = resolve_config_path(None, path.to_str().unwrap());
+        fs::remove_file(&path).unwrap();
+        assert_eq!(resolved.as_deref(), path.to_str());
     }
 
     #[test]

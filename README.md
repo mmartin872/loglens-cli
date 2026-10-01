@@ -226,6 +226,10 @@ source is never overwritten by a later one, so `--config` is a good place
 for defaults you want to check into a project and override per-shell with
 an environment variable when needed.
 
+If you don't pass `--config`, `loglens` looks for a file named `.loglensrc`
+in the current directory and uses it if it's there. A missing `.loglensrc`
+is not an error, but a `--config` path that doesn't exist is.
+
 ## As a library
 
 ```rust
